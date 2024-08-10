@@ -1,0 +1,6 @@
+/archive/
+/layer/
+.idea/
+/package/
+__pycache__/
+.terraform/
