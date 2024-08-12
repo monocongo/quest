@@ -34,10 +34,32 @@ def handle_analysis(event, context):
         for col in ['series_id', 'period']:
             bls_df[col] = bls_df[col].str.strip()
 
-        # perform analysis on the data
+        # perform a simple analysis on the data
         mean = pop_df['population'].where(pop_df['year'].between(2013, 2018, inclusive='both')).mean()
         std_dev = pop_df['population'].where(pop_df['year'].between(2013, 2018, inclusive='both')).std()
-        result = [f"Mean population: {mean:.2f}", f"Standard deviation: {std_dev:.2f}"]
+
+        # group the rows by series_id and year to get a sum for each group
+        best_year_df = bls_df.groupby(['series_id', 'year']).agg({'value': 'sum'}).reset_index()
+
+        # for each series_id we select the maximum sum value
+        best_year_df = best_year_df.loc[best_year_df.groupby('series_id')['value'].idxmax()].reset_index(drop=True)
+
+        # filter the CSV DataFrame for the specific series_id and period
+        filtered_df = bls_df[(bls_df['series_id'] == 'PRS30006032') & (bls_df['period'] == 'Q01')]
+
+        # merge with the population DataFrame to get the `population` column
+        report_df = filtered_df.merge(pop_df, on='year', how='left')
+
+        # use the result columns shown in the example
+        display_cols = ['series_id', 'year', 'period', 'value', 'population']
+        report_df = report_df[display_cols]
+
+        result = {
+            "Mean population:": f"{mean:.2f}",
+            "Standard deviation": f"{std_dev:.2f}",
+            "Best Years": best_year_df.to_dict(),
+            "Report": report_df.to_dict(),
+        }
 
         return {
             'statusCode': 200,
