@@ -137,12 +137,16 @@ resource "aws_iam_role_policy" "lambda_policy" {
     Statement = [
       {
         Action = [
+          "s3:DeleteObject",
           "s3:GetObject",
           "s3:PutObject",
           "s3:ListBucket",
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
-          "logs:PutLogEvents"
+          "logs:PutLogEvents",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
         ]
         Effect   = "Allow"
         Resource = "*"
@@ -151,11 +155,26 @@ resource "aws_iam_role_policy" "lambda_policy" {
   })
 }
 
-# ensure the layer directory exists
-resource "null_resource" "create_layer_directory" {
-  provisioner "local-exec" {
-    command = "mkdir -p ${path.module}/../../../layer/python"
-  }
+# # ensure the layer directory exists
+# resource "null_resource" "create_layer_directory" {
+#   provisioner "local-exec" {
+#     command = "mkdir -p ${path.module}/../../../layer/python"
+#   }
+# }
+#
+# # ensure the layer directory exists
+# resource "local_file" "ensure_layer_directory" {
+#   filename = "${path.module}/../../../layer/python/.keep"
+#   content  = ""
+#
+#   provisioner "local-exec" {
+#     command = "ls -la ${path.module}/../../../layer/python"
+#   }
+# }
+
+# define the Lambda layer ARN for the AWS Pandas layer
+locals {
+  pandas_layer_arn = "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:12"
 }
 
 # install the dependencies for the Lambda function in a separate layer folder
@@ -170,7 +189,8 @@ resource "null_resource" "install_layer_dependencies" {
     command = "pip install -r ${path.module}/../../../requirements.txt --target ${path.module}/../../../layer/python/"
   }
 
-  depends_on = [null_resource.create_layer_directory]
+#   depends_on = [null_resource.create_layer_directory]
+#   depends_on = [local_file.ensure_layer_directory]
 }
 
 # create a ZIP archive of the layer code
@@ -179,7 +199,7 @@ data "archive_file" "layer_zip" {
   source_dir  = "${path.module}/../../../layer"
   output_path = "${path.module}/../../../archive/layer.zip"
   excludes    = ["**/__pycache__/**"]
-  depends_on = [null_resource.install_layer_dependencies]
+  depends_on  = [null_resource.install_layer_dependencies]
 }
 
 # create a ZIP archive of the Lambda function code
@@ -192,22 +212,22 @@ data "archive_file" "lambda_zip" {
 
 # define the Lambda layer using the ZIP archive created earlier
 resource "aws_lambda_layer_version" "lambda_layer" {
-  filename   = data.archive_file.layer_zip.output_path
-  layer_name = "lambda-layer"
+  filename            = data.archive_file.layer_zip.output_path
+  layer_name          = "lambda-layer"
   compatible_runtimes = ["python3.12"]
 }
 
-# Define the Lambda function itself, specifying the function's name, runtime, handler, and the role it will use.
-# The function's code is provided as a ZIP file, and environment variables are set.
+# Define a Lambda function for the data sync process, specifying the function's name, runtime, handler,
+# and the role it will use. The function's code is provided as a ZIP file, and environment variables are set.
 resource "aws_lambda_function" "sync_function" {
   filename         = data.archive_file.lambda_zip.output_path
   function_name    = "sync_function"
   role             = aws_iam_role.lambda_role.arn
-  handler          = "lambda_function.handler"
+  handler          = "lambda_function.handle_sync"
   runtime          = "python3.12"
-  layers           = [aws_lambda_layer_version.lambda_layer.arn]
+  layers           = [aws_lambda_layer_version.lambda_layer.arn, local.pandas_layer_arn]
   source_code_hash = filebase64sha256(data.archive_file.lambda_zip.output_path)
-  timeout          = 600
+  timeout          = 300
 
   environment {
     variables = {
@@ -238,16 +258,71 @@ resource "aws_lambda_permission" "allow_cloudwatch" {
 }
 
 # SQS queue to receive notification messages from the S3 bucket
-resource "aws_sqs_queue" "data_queue" {
-  name = "data_queue"
+resource "aws_sqs_queue" "json_data_received_queue" {
+  name = "json_data_received_queue"
+  visibility_timeout_seconds = 65  # set this to be slightly higher than the Lambda function timeout
 }
 
-# # S3 bucket notification to send events to the SQS queue whenever an object is created in the bucket
-# resource "aws_s3_bucket_notification" "bucket_notification" {
-#   bucket = aws_s3_bucket.data_bucket.id
-#
-#   queue {
-#     queue_arn = aws_sqs_queue.data_queue.arn
-#     events    = ["s3:ObjectCreated:*"]
-#   }
-# }
+# SQS queue policy to allow S3 to send messages to the queue
+resource "aws_sqs_queue_policy" "allow_s3_notifications" {
+  queue_url = aws_sqs_queue.json_data_received_queue.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "s3.amazonaws.com"
+        }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.json_data_received_queue.arn
+        Condition = {
+          ArnEquals = {
+            "aws:SourceArn" = aws_s3_bucket.data_bucket.arn
+          }
+        }
+      }
+    ]
+  })
+}
+
+# S3 notification configuration to send messages to the SQS queue
+resource "aws_s3_bucket_notification" "bucket_notification" {
+  bucket = aws_s3_bucket.data_bucket.id
+
+  queue {
+    queue_arn     = aws_sqs_queue.json_data_received_queue.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_suffix = "api_data.json"
+  }
+
+  depends_on = [aws_sqs_queue_policy.allow_s3_notifications]
+
+}
+
+# Lambda function for the SQS messages, specifying the function's name, runtime, handler, and role.
+# The function's code is provided as a ZIP file, and environment variables are set.
+resource "aws_lambda_function" "analysis_function" {
+  filename         = data.archive_file.lambda_zip.output_path
+  function_name    = "analysis_function"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_function.handle_analysis"
+  runtime          = "python3.12"
+  layers           = [aws_lambda_layer_version.lambda_layer.arn, local.pandas_layer_arn]
+  source_code_hash = filebase64sha256(data.archive_file.lambda_zip.output_path)
+  timeout          = 60
+
+  environment {
+    variables = {
+      BUCKET_NAME = aws_s3_bucket.data_bucket.bucket
+    }
+  }
+}
+
+# map the SQS message event to the Lambda function for analysis
+resource "aws_lambda_event_source_mapping" "sqs_lambda_trigger" {
+  event_source_arn = aws_sqs_queue.json_data_received_queue.arn
+  function_name    = aws_lambda_function.analysis_function.arn
+  batch_size       = 1
+}
