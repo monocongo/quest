@@ -1,0 +1,27 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "quest"
+version = "0.1.0"
+description = "An example data engineering project."
+authors = ["James Adams <monocongo@gmail.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+boto3 = "1.34"
+bs4 = "0.0.2"
+loguru = "0.7.2"
+requests = "2.32.3"
+s3fs = "0.4.2"
+
+[tool.poetry.dev-dependencies]
+pytest = "8.3.2"
+toml = "0.10.2"
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    'ignore::FutureWarning',
+]
