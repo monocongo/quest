@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "An example data engineering project."
 authors = ["James Adams <monocongo@gmail.com>"]
 license = "MIT"
+packages = [{include = 'quest', from = 'src'}]
 
 [tool.poetry.dependencies]
 python = "^3.12"
