@@ -3,14 +3,58 @@ import json
 import os
 
 from loguru import logger
+import pandas as pd
 
 from fetch import fetch_api_data
 from publish import sync_s3_with_source
 
 
-def handler(event, context):
+def handle_analysis(event, context):
     """
-    Lambda function handler to process data from a URL and an API.
+
+    :param event:
+    :param context:
+    :return:
+    """
+    # bucket name environment variable should be set by Terraform for the Lambda function
+    bucket_name = os.environ['BUCKET_NAME']
+
+    try:
+        logger.info('Handling SQS message')
+
+        # extract and clean the population data
+        json_path = f"s3://{bucket_name}/api_data.json"
+        pop_df = pd.read_json(path_or_buf=json_path)
+        pop_df = pop_df.rename(columns=lambda x: x.strip().lower())
+
+        # extract and clean the BLS data
+        csv_path = f"s3://{bucket_name}/pr.data.0.Current"
+        bls_df = pd.read_csv(filepath_or_buffer=csv_path, sep='\t')
+        bls_df = bls_df.rename(columns=lambda x: x.strip().lower())
+        for col in ['series_id', 'period']:
+            bls_df[col] = bls_df[col].str.strip()
+
+        # perform analysis on the data
+        mean = pop_df['population'].where(pop_df['year'].between(2013, 2018, inclusive='both')).mean()
+        std_dev = pop_df['population'].where(pop_df['year'].between(2013, 2018, inclusive='both')).std()
+        result = [f"Mean population: {mean:.2f}", f"Standard deviation: {std_dev:.2f}"]
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps(result)
+        }
+
+    except Exception as e:
+        print(e)
+        return {
+            'statusCode': 500,
+            'body': json.dumps(f'Data processing failed: {str(e)}')
+        }
+
+
+def handle_sync(event, context):
+    """
+    Lambda function handler to fetch and load data from 1) a download URL and 2) a REST API.
 
     :param event:
     :param context:
