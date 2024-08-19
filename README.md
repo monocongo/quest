@@ -118,3 +118,56 @@ How could you add information to your programmatic access requests to let BLS co
 <summary>Hint 3</summary>
   Adding a <code>User-Agent</code> header to your request with contact information will comply with the BLS data policies and allow you to keep accessing their data programmatically.
 </details>
+
+
+# ==============================================
+
+# Data Engineering Challenge Solution
+
+This project addresses the four parts of the data engineering challenge using AWS Lambda functions and Terraform for infrastructure management.
+
+## Part 1: Downloading Data
+
+The `handle_sync` Lambda function in `lambda_function.py` handles downloading data:
+
+1. It calls `sync_s3_with_source` from `publish.py` to download all files from the BLS website (https://download.bls.gov/pub/time.series/pr/) and store them in an S3 bucket.
+2. The function uses the `requests` library to fetch the HTML content of the webpage and `BeautifulSoup` to parse it and extract file links.
+3. Each file is then downloaded and uploaded to the specified S3 bucket.
+
+## Part 2: API Data Retrieval
+
+The `handle_sync` function also manages API data retrieval:
+
+1. It calls `fetch_api_data` from `fetch.py` to fetch population data from the Data USA API (https://datausa.io/api/data?drilldowns=Nation&measures=Population).
+2. The function uses the `requests` library to make the API call and retrieve the JSON data.
+3. The data is then stored in the S3 bucket as 'api_data.json'.
+
+## Part 3: Data Analysis
+
+The `handle_analysis` Lambda function in `lambda_function.py` performs the required data analysis:
+
+1. It reads the population data from 'api_data.json' in S3 and the BLS data from 'pr.data.0.Current' in S3.
+2. The function calculates the mean and standard deviation of the population between 2013 and 2018.
+3. It determines the best year (highest sum of values) for each series_id in the BLS data.
+4. A report is generated combining BLS data for series 'PRS30006032' in Q1 with the corresponding population data.
+
+## Part 4: Infrastructure as Code
+
+The project uses Terraform to manage AWS infrastructure:
+
+1. Terraform configuration files in the `terraform` folder define the required AWS resources.
+2. This includes Lambda functions, S3 bucket, IAM roles, CloudWatch log groups, and an SQS queue.
+3. To deploy:
+   - Navigate to the `terraform` folder
+   - Run `terraform init` to initialize Terraform
+   - Run `terraform plan` to preview changes
+   - Run `terraform apply` to create or update the infrastructure
+
+## Execution Flow
+
+1. The `handle_sync` function is triggered periodically (e.g., daily) to update data.
+2. When new data is available in S3, a message is sent to the SQS queue.
+3. The SQS message triggers the `handle_analysis` function to process the new data.
+4. Results of the analysis are returned as a JSON response.
+
+This serverless architecture ensures efficient, event-driven data processing and analysis.
